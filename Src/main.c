@@ -5,6 +5,7 @@
 #include "main.h"
 #include "filter_Coeff.h"
 #include "musique.h"
+#include "math.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -31,6 +32,7 @@
 
 /* Private macro -------------------------------------------------------------*/
 /* USER CODE BEGIN PM */
+
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
@@ -118,7 +120,6 @@ void passThrough(void){
 	HAL_SAI_Receive (&hsai_BlockB2,(uint8_t *)&echInputRight,1,SAI_WAIT);
 
 	/* Calcul du filtre (ici Out = In) */
-
 	echOutputLeft = echInputLeft;
 	echOutputRight = echInputRight;
 
@@ -146,8 +147,8 @@ void echo_filter(uint16_t i_delay_in_ms, uint16_t i_gain)
 	bufferInputLeft[index]  = echInputLeft;
 
 	// Compute filter output
-	echOutputRight = bufferInputRight + (bufferInputRight[(index + index_delay) % BUFFER_SIZE_INPUT] * i_gain) / SCALING_MILI_TO_UNIT;
-	echOutputLeft  = bufferInputLeft  + (bufferInputLeft[ (index + index_delay) % BUFFER_SIZE_INPUT] * i_gain) / SCALING_MILI_TO_UNIT;
+	echOutputRight = echInputRight + (bufferInputRight[(index + index_delay) % BUFFER_SIZE_INPUT] * i_gain) / SCALING_MILI_TO_UNIT;
+	echOutputLeft  = echInputLeft  + (bufferInputLeft[ (index + index_delay) % BUFFER_SIZE_INPUT] * i_gain) / SCALING_MILI_TO_UNIT;
 
 	// Update index filter
 	if(index == 0)
@@ -201,6 +202,149 @@ void reverb_filter(uint16_t i_delay_in_ms, uint16_t i_gain)
 	HAL_SAI_Transmit(&hsai_BlockA2,(uint8_t *)&echOutputRight,1,SAI_WAIT);
 }
 
+uint32_t compute_nb_ech_periode(uint32_t i_note_frequency)
+{
+	return AUDIOFREQ_16K / i_note_frequency;
+}
+
+uint32_t compute_nb_ech_note(float i_note_duree)
+{
+	return AUDIOFREQ_16K * i_note_duree;
+}
+
+void note_play_classic(uint32_t i_note_frequency, float i_note_duree)
+{
+	// Variable declaration
+	uint32_t index_max = 0U;
+
+	// Index max computation
+	index_max = compute_nb_ech_note(i_note_duree);
+
+	for (uint32_t i = 0; i < index_max; i++)
+	{
+		// Sinus computation
+		TIME_START;
+		echOutputLeft  = AMPLITUDE * sin((2 * PI * i) / compute_nb_ech_periode(i_note_frequency));
+		echOutputRight = AMPLITUDE * sin((2 * PI * i) / compute_nb_ech_periode(i_note_frequency));
+		TIME_STOP;
+
+		// Apply on ouput
+		HAL_SAI_Transmit(&hsai_BlockA2,(uint8_t *)&echOutputLeft, 1,SAI_WAIT);
+		HAL_SAI_Transmit(&hsai_BlockA2,(uint8_t *)&echOutputRight,1,SAI_WAIT);
+	}
+}
+
+void music_play_classic(struct note musique[TAILLE_MUSIQUE])
+{
+	// Play all note of musique
+	for (uint32_t i = 0; i < TAILLE_MUSIQUE; i++)
+	{
+		note_play_classic(musique[i].freqNote, musique[i].dureeNote);
+	}
+}
+
+void init_sinus_table(void)
+{
+	for  (uint32_t i = 0; i < BUFFER_SIZE_SINUS; i++)
+	{
+		sinusTable[i] = AMPLITUDE * sin((2 * PI * i) / compute_nb_ech_periode(AUDIOFREQ_16K));
+	}
+}
+
+void note_play_DDS(uint32_t i_note_frequency, float i_note_duree)
+{
+	// Variable declaration
+	uint32_t index_max = 0U;
+	uint32_t j         = 0U;
+
+	// Index max computation
+	index_max = compute_nb_ech_note(i_note_duree);
+
+	for (uint32_t i = 0; i < index_max; i++)
+	{
+		TIME_START;
+
+		// Get sinus amplitude
+		echOutputLeft  = sinusTable[j];
+		echOutputRight = sinusTable[j];
+
+		// Incremete sinus index.
+		j = (j + i_note_frequency) % BUFFER_SIZE_SINUS;
+
+        TIME_STOP;
+
+		// Apply on ouput
+		HAL_SAI_Transmit(&hsai_BlockA2,(uint8_t *)&echOutputLeft, 1,SAI_WAIT);
+		HAL_SAI_Transmit(&hsai_BlockA2,(uint8_t *)&echOutputRight,1,SAI_WAIT);
+	}
+}
+
+void music_play_DDS(struct note musique[TAILLE_MUSIQUE])
+{
+    // Play all note of musique
+    for (uint32_t i = 0; i < TAILLE_MUSIQUE; i++)
+    {
+        note_play_DDS(musique[i].freqNote, musique[i].dureeNote);
+    }
+}
+
+void notePlayIIR(uint32_t i_note_frequency, float i_note_duree)
+{
+    // Variable declaration
+    uint32_t index_max;
+    float coef_table[2] = {0};
+
+    // Index max computation
+    index_max = compute_nb_ech_note(i_note_duree);
+    echOutputRight = 0;
+    echOutputLeft  = 0;
+    echInputLeft   = AMPLITUDE * sin((2 * PI) / compute_nb_ech_periode(i_note_frequency));
+    echInputRight  = AMPLITUDE * sin((2 * PI) / compute_nb_ech_periode(i_note_frequency));
+    coef_table[0] = (-1) *
+                    sin((2 * PI * 2) / compute_nb_ech_periode(i_note_frequency)) /
+                    sin((2 * PI) / compute_nb_ech_periode(i_note_frequency));
+    coef_table[1] = 1;
+
+    for (uint32_t i = 0; i < index_max; i++)
+    {
+        // Compute filter output
+        echOutputRight = echInputRight;
+        echOutputRight -= (bufferOutputRight[(index + 1) % BUFFER_SIZE_OUTPUT] * coef_table[1]);
+        echOutputRight -= (bufferOutputRight[(index + 2) % BUFFER_SIZE_OUTPUT] * coef_table[2]);
+
+        // Compute filter output
+        echOutputLeft  = echInputLeft;
+        echOutputLeft -= (bufferOutputLeft[(index + 1) % BUFFER_SIZE_OUTPUT] * coef_table[1]);
+        echOutputLeft -= (bufferOutputLeft[(index + 2) % BUFFER_SIZE_OUTPUT] * coef_table[2]);
+
+        // Save output into buffer
+        bufferOutputRight[index] = echOutputRight;
+        bufferOutputLeft[index]  = echOutputLeft;
+
+        // Update index filter
+        if(index == 0)
+        {
+            index = BUFFER_SIZE_INPUT - 1;
+        }
+        else
+        {
+            index--;
+        }
+
+        // Apply on ouput
+        HAL_SAI_Transmit(&hsai_BlockA2,(uint8_t *)&echOutputLeft, 1,SAI_WAIT);
+        HAL_SAI_Transmit(&hsai_BlockA2,(uint8_t *)&echOutputRight,1,SAI_WAIT);
+    }
+}
+
+void music_play_filtre_IIR(struct note musique[TAILLE_MUSIQUE])
+{
+    // Play all note of musique
+    for (uint32_t i = 0; i < TAILLE_MUSIQUE; i++)
+    {
+        notePlayIIR(musique[i].freqNote, musique[i].dureeNote);
+    }
+}
 /* USER CODE END 0 */
 
 /**
@@ -264,14 +408,15 @@ int main(void)
 	/* USER CODE BEGIN WHILE */
 	initGpio();			// Toggle PA0 pour la mesure du temps de calcul
 
-	while(1){
-//		passThrough();
-//		echo_filter(250, 600);
-		reverb_filter(250, 600);
+	init_sinus_table();
 
-		/* USER CODE END WHILE */
+	while(1)
+	{
+//		music_play_classic(musique);
 
-		/* USER CODE BEGIN 3 */
+//		music_play_DDS(musique);
+
+	    music_play_filtre_IIR(musique);
 
 	}
 	/* USER CODE END 3 */
