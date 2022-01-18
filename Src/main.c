@@ -17,17 +17,23 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define AUDIOFREQ_16K 		 ((uint32_t)16000U)  //AUDIOFREQ_16K = 16 Khz
-#define BUFFER_SIZE_INPUT	 4000
-#define BUFFER_SIZE_OUTPUT	 4000
-#define BUFFER_SIZE_SINUS 	 16000
-#define BUFFER_SIZE_AUDIO	 16000
-#define AMPLITUDE			 300
-#define SAI_WAIT			 100
-#define TIME_START			 HAL_GPIO_WritePin(GPIOA, GPIO_PIN_0, GPIO_PIN_SET)
-#define TIME_STOP			 HAL_GPIO_WritePin(GPIOA, GPIO_PIN_0, GPIO_PIN_RESET)
-#define PI					 3.141592
-#define SCALING_MILI_TO_UNIT 1000
+#define AUDIOFREQ_16K 		            ((uint32_t)16000U)  //AUDIOFREQ_16K = 16 Khz
+#define BUFFER_SIZE_INPUT	            4000
+#define BUFFER_SIZE_OUTPUT	            4000
+#define BUFFER_SIZE_SINUS 	            16000
+#define BUFFER_SIZE_AUDIO	            16000
+#define AMPLITUDE			            300
+#define SAI_WAIT			            100
+#define TIME_START			            HAL_GPIO_WritePin(GPIOA, GPIO_PIN_0, GPIO_PIN_SET)
+#define TIME_STOP			            HAL_GPIO_WritePin(GPIOA, GPIO_PIN_0, GPIO_PIN_RESET)
+#define PI					            3.141592
+#define SCALING_MILI_TO_UNIT            1000
+#define LOW_FREQUENCY_NOISE             350
+#define HIGHT_FREQUENCY_NOISE           1500
+#define AUDIO_SIGNAL_FREQUENCY          587
+#define SIGNAL_DURATION_IN_MS           1000
+#define MAX_NOTE_TIME_DURATION          1
+
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -67,7 +73,7 @@ int16_t echInputRight  = 0;
 int16_t echOutputRight = 0;
 int16_t echOutputLeft  = 0;
 
-uint16_t index = BUFFER_SIZE_INPUT - 1;
+uint16_t index_filter = BUFFER_SIZE_INPUT - 1;
 
 /* USER CODE END PV */
 
@@ -114,6 +120,7 @@ void initGpio(void){
 }
 
 
+
 void passThrough(void){
 	/* Reception des échantillons d'entrée */
 	HAL_SAI_Receive (&hsai_BlockB2,(uint8_t *)&echInputLeft,1,SAI_WAIT);
@@ -143,21 +150,21 @@ void echo_filter(uint16_t i_delay_in_ms, uint16_t i_gain)
 	HAL_SAI_Receive (&hsai_BlockB2,(uint8_t *)&echInputRight,1,SAI_WAIT);
 
 	// Save ech into buffer
-	bufferInputRight[index] = echInputRight;
-	bufferInputLeft[index]  = echInputLeft;
+	bufferInputRight[index_filter] = echInputRight;
+	bufferInputLeft[index_filter]  = echInputLeft;
 
 	// Compute filter output
-	echOutputRight = echInputRight + (bufferInputRight[(index + index_delay) % BUFFER_SIZE_INPUT] * i_gain) / SCALING_MILI_TO_UNIT;
-	echOutputLeft  = echInputLeft  + (bufferInputLeft[ (index + index_delay) % BUFFER_SIZE_INPUT] * i_gain) / SCALING_MILI_TO_UNIT;
+	echOutputRight = echInputRight + (bufferInputRight[(index_filter + index_delay) % BUFFER_SIZE_INPUT] * i_gain) / SCALING_MILI_TO_UNIT;
+	echOutputLeft  = echInputLeft  + (bufferInputLeft[ (index_filter + index_delay) % BUFFER_SIZE_INPUT] * i_gain) / SCALING_MILI_TO_UNIT;
 
 	// Update index filter
-	if(index == 0)
+	if (index_filter == 0)
 	{
-		index = BUFFER_SIZE_INPUT - 1;
+	    index_filter = BUFFER_SIZE_INPUT - 1;
 	}
 	else
 	{
-		index--;
+	    index_filter--;
 	}
 
 	/* Envoi des échantillons de sortie */
@@ -180,27 +187,28 @@ void reverb_filter(uint16_t i_delay_in_ms, uint16_t i_gain)
 	HAL_SAI_Receive (&hsai_BlockB2,(uint8_t *)&echInputRight,1,SAI_WAIT);
 
 	// Compute filter output
-	echOutputRight = echInputRight + (bufferOutputRight[(index + index_delay) % BUFFER_SIZE_OUTPUT] * i_gain) / SCALING_MILI_TO_UNIT;
-	echOutputLeft  = echInputLeft  + (bufferOutputLeft[ (index + index_delay) % BUFFER_SIZE_OUTPUT] * i_gain) / SCALING_MILI_TO_UNIT;
+	echOutputRight = echInputRight + (bufferOutputRight[(index_filter + index_delay) % BUFFER_SIZE_OUTPUT] * i_gain) / SCALING_MILI_TO_UNIT;
+	echOutputLeft  = echInputLeft  + (bufferOutputLeft[ (index_filter + index_delay) % BUFFER_SIZE_OUTPUT] * i_gain) / SCALING_MILI_TO_UNIT;
 
 	// Save output into buffer
-	bufferOutputRight[index] = echOutputRight;
-	bufferOutputLeft[index]  = echOutputLeft;
+	bufferOutputRight[index_filter] = echOutputRight;
+	bufferOutputLeft[index_filter]  = echOutputLeft;
 
 	// Update index filter
-	if(index == 0)
+	if(index_filter == 0)
 	{
-		index = BUFFER_SIZE_INPUT - 1;
+	    index_filter = BUFFER_SIZE_INPUT - 1;
 	}
 	else
 	{
-		index--;
+	    index_filter--;
 	}
 
 	/* Envoi des échantillons de sortie */
 	HAL_SAI_Transmit(&hsai_BlockA2,(uint8_t *)&echOutputLeft,1,SAI_WAIT);
 	HAL_SAI_Transmit(&hsai_BlockA2,(uint8_t *)&echOutputRight,1,SAI_WAIT);
 }
+
 
 uint32_t compute_nb_ech_periode(uint32_t i_note_frequency)
 {
@@ -210,6 +218,35 @@ uint32_t compute_nb_ech_periode(uint32_t i_note_frequency)
 uint32_t compute_nb_ech_note(float i_note_duree)
 {
 	return AUDIOFREQ_16K * i_note_duree;
+}
+
+
+void init_sinus_table(void)
+{
+    for  (uint32_t i = 0; i < BUFFER_SIZE_SINUS; i++)
+    {
+        sinusTable[i] = AMPLITUDE * sin((2 * PI * i) / AUDIOFREQ_16K);
+    }
+}
+
+void RAZ_Buffer(int16_t *buffer)
+{
+    for (uint32_t i = 0; i < BUFFER_SIZE_OUTPUT; i++)
+    {
+        buffer[i] = 0;
+    }
+}
+
+int16_t round_value(float i_value)
+{
+    if (i_value > 0)
+    {
+        return (int16_t)(i_value + 0.5);
+    }
+    else
+    {
+        return (int16_t)(i_value - 0.5);
+    }
 }
 
 void note_play_classic(uint32_t i_note_frequency, float i_note_duree)
@@ -234,57 +271,32 @@ void note_play_classic(uint32_t i_note_frequency, float i_note_duree)
 	}
 }
 
-void music_play_classic(struct note musique[TAILLE_MUSIQUE])
-{
-	// Play all note of musique
-	for (uint32_t i = 0; i < TAILLE_MUSIQUE; i++)
-	{
-		note_play_classic(musique[i].freqNote, musique[i].dureeNote);
-	}
-}
-
-void init_sinus_table(void)
-{
-	for  (uint32_t i = 0; i < BUFFER_SIZE_SINUS; i++)
-	{
-		sinusTable[i] = AMPLITUDE * sin((2 * PI * i) / compute_nb_ech_periode(AUDIOFREQ_16K));
-	}
-}
-
 void note_play_DDS(uint32_t i_note_frequency, float i_note_duree)
 {
-	// Variable declaration
-	uint32_t index_max = 0U;
-	uint32_t j         = 0U;
+    // Variable declaration
+    uint32_t index_max = 0U;
+    uint32_t j         = 0U;
+    uint16_t index     = BUFFER_SIZE_INPUT - 1;
 
-	// Index max computation
-	index_max = compute_nb_ech_note(i_note_duree);
+    // Index max computation
+    index_max = compute_nb_ech_note(i_note_duree);
 
-	for (uint32_t i = 0; i < index_max; i++)
-	{
-		TIME_START;
+    for (uint32_t i = 0; i < index_max; i++)
+    {
+        TIME_START;
 
-		// Get sinus amplitude
-		echOutputLeft  = sinusTable[j];
-		echOutputRight = sinusTable[j];
+        // Get sinus amplitude
+        echOutputLeft  = sinusTable[j];
+        echOutputRight = sinusTable[j];
 
-		// Incremete sinus index.
-		j = (j + i_note_frequency) % BUFFER_SIZE_SINUS;
+        // Incremete sinus index.
+        j = (j + i_note_frequency) % BUFFER_SIZE_SINUS;
 
         TIME_STOP;
 
-		// Apply on ouput
-		HAL_SAI_Transmit(&hsai_BlockA2,(uint8_t *)&echOutputLeft, 1,SAI_WAIT);
-		HAL_SAI_Transmit(&hsai_BlockA2,(uint8_t *)&echOutputRight,1,SAI_WAIT);
-	}
-}
-
-void music_play_DDS(struct note musique[TAILLE_MUSIQUE])
-{
-    // Play all note of musique
-    for (uint32_t i = 0; i < TAILLE_MUSIQUE; i++)
-    {
-        note_play_DDS(musique[i].freqNote, musique[i].dureeNote);
+        // Apply on ouput
+        HAL_SAI_Transmit(&hsai_BlockA2,(uint8_t *)&echOutputLeft, 1,SAI_WAIT);
+        HAL_SAI_Transmit(&hsai_BlockA2,(uint8_t *)&echOutputRight,1,SAI_WAIT);
     }
 }
 
@@ -292,30 +304,48 @@ void notePlayIIR(uint32_t i_note_frequency, float i_note_duree)
 {
     // Variable declaration
     uint32_t index_max;
-    float coef_table[2] = {0};
+    uint32_t nb_ech_periode;
+    float    coef_table[2] = {0};
+    uint16_t index     = BUFFER_SIZE_INPUT - 1;
 
     // Index max computation
     index_max = compute_nb_ech_note(i_note_duree);
+    nb_ech_periode = compute_nb_ech_periode(i_note_frequency);
+
+    // Input initialization
+    RAZ_Buffer(bufferInputRight);
+    RAZ_Buffer(bufferInputLeft);
+
+    // Start impulse
+    bufferInputRight[index] = 1;
+    bufferInputLeft[index]  = 1;
+
+    // Output initialization
     echOutputRight = 0;
+    bufferOutputRight[(index + 1) % BUFFER_SIZE_OUTPUT] = AMPLITUDE * sin((2 * PI) / nb_ech_periode);
+    bufferOutputRight[(index + 2) % BUFFER_SIZE_OUTPUT] = 0;
+
     echOutputLeft  = 0;
-    echInputLeft   = AMPLITUDE * sin((2 * PI) / compute_nb_ech_periode(i_note_frequency));
-    echInputRight  = AMPLITUDE * sin((2 * PI) / compute_nb_ech_periode(i_note_frequency));
-    coef_table[0] = (-1) *
-                    sin((2 * PI * 2) / compute_nb_ech_periode(i_note_frequency)) /
-                    sin((2 * PI) / compute_nb_ech_periode(i_note_frequency));
-    coef_table[1] = 1;
+    bufferOutputLeft[(index + 1) % BUFFER_SIZE_OUTPUT] =  AMPLITUDE * sin((2 * PI) / nb_ech_periode);
+    bufferOutputLeft[(index + 2) % BUFFER_SIZE_OUTPUT] = 0;
+
+    // Coefficient computation
+    coef_table[0]  = (-1) *
+                     sin((2 * PI * 2) / nb_ech_periode) /
+                     sin((2 * PI) / nb_ech_periode);
+    coef_table[1]  = 1;
 
     for (uint32_t i = 0; i < index_max; i++)
     {
         // Compute filter output
-        echOutputRight = echInputRight;
-        echOutputRight -= (bufferOutputRight[(index + 1) % BUFFER_SIZE_OUTPUT] * coef_table[1]);
-        echOutputRight -= (bufferOutputRight[(index + 2) % BUFFER_SIZE_OUTPUT] * coef_table[2]);
+        echOutputRight =  bufferInputRight[index];
+        echOutputRight -= (bufferOutputRight[(index + 1) % BUFFER_SIZE_OUTPUT] * coef_table[0]);
+        echOutputRight -= (bufferOutputRight[(index + 2) % BUFFER_SIZE_OUTPUT] * coef_table[1]);
 
         // Compute filter output
-        echOutputLeft  = echInputLeft;
-        echOutputLeft -= (bufferOutputLeft[(index + 1) % BUFFER_SIZE_OUTPUT] * coef_table[1]);
-        echOutputLeft -= (bufferOutputLeft[(index + 2) % BUFFER_SIZE_OUTPUT] * coef_table[2]);
+        echOutputLeft =  bufferInputLeft[index];
+        echOutputLeft -= (bufferOutputLeft[(index + 1) % BUFFER_SIZE_OUTPUT] * coef_table[0]);
+        echOutputLeft -= (bufferOutputLeft[(index + 2) % BUFFER_SIZE_OUTPUT] * coef_table[1]);
 
         // Save output into buffer
         bufferOutputRight[index] = echOutputRight;
@@ -331,9 +361,29 @@ void notePlayIIR(uint32_t i_note_frequency, float i_note_duree)
             index--;
         }
 
-        // Apply on ouput
-        HAL_SAI_Transmit(&hsai_BlockA2,(uint8_t *)&echOutputLeft, 1,SAI_WAIT);
-        HAL_SAI_Transmit(&hsai_BlockA2,(uint8_t *)&echOutputRight,1,SAI_WAIT);
+        // Apply on output
+        HAL_SAI_Transmit(&hsai_BlockA2, (uint8_t *)&echOutputLeft,  1, SAI_WAIT);
+        HAL_SAI_Transmit(&hsai_BlockA2, (uint8_t *)&echOutputRight, 1, SAI_WAIT);
+    }
+}
+
+
+
+void music_play_classic(struct note musique[TAILLE_MUSIQUE])
+{
+	// Play all note of musique
+	for (uint32_t i = 0; i < TAILLE_MUSIQUE; i++)
+	{
+		note_play_classic(musique[i].freqNote, musique[i].dureeNote);
+	}
+}
+
+void music_play_DDS(struct note musique[TAILLE_MUSIQUE])
+{
+    // Play all note of musique
+    for (uint32_t i = 0; i < TAILLE_MUSIQUE; i++)
+    {
+        note_play_DDS(musique[i].freqNote, musique[i].dureeNote);
     }
 }
 
@@ -345,6 +395,71 @@ void music_play_filtre_IIR(struct note musique[TAILLE_MUSIQUE])
         notePlayIIR(musique[i].freqNote, musique[i].dureeNote);
     }
 }
+
+
+
+void note_create_DDS(uint32_t i_note_frequency, float i_note_duree, int16_t *output_buffer)
+{
+    // Variable declaration
+    uint32_t index_max = 0U;
+    uint32_t j         = 0U;
+
+    // Index max computation
+    index_max = compute_nb_ech_note(i_note_duree);
+
+    for (uint32_t i = 0; i < index_max; i++)
+    {
+        // Get sinus amplitude
+        output_buffer[i]  = sinusTable[j];
+
+        // Incremete sinus index.
+        j = (j + i_note_frequency) % BUFFER_SIZE_SINUS;
+    }
+}
+
+void note_create_classic(uint32_t i_note_frequency, float i_note_duree, int16_t *output_buffer)
+{
+    // Variable declaration
+    uint32_t index_max = 0U;
+
+    // Index max computation
+    index_max = compute_nb_ech_note(i_note_duree);
+
+    for (uint32_t i = 0; i < index_max; i++)
+    {
+        // Sinus computation
+        output_buffer[i]  = AMPLITUDE * sin((2 * PI * i) / compute_nb_ech_periode(i_note_frequency));
+    }
+}
+
+void note_create_IIR(uint32_t i_note_frequency, float i_note_duree, int16_t *output_buffer)
+{
+    // Variable declaration
+    uint32_t index_max;
+    uint32_t nb_ech_periode;
+    float    coef_table[2] = {0};
+
+    // Index max computation
+    index_max      = compute_nb_ech_note(i_note_duree);
+    nb_ech_periode = compute_nb_ech_periode(i_note_frequency);
+
+    // Output initialization
+    output_buffer[0] = 0;
+    output_buffer[1] = round_value((float)AMPLITUDE * sin((2 * PI) / nb_ech_periode));
+
+    // Coefficient computation
+    coef_table[0]  = sin((2 * PI * 2) / nb_ech_periode) /
+                     sin((2 * PI) / nb_ech_periode);
+    coef_table[1]  = 1;
+
+    for (uint32_t i = 2; i < index_max; i++)
+    {
+        // Compute filter output
+        output_buffer[i] = round_value((float) (output_buffer[i - 1] * coef_table[0]) - (output_buffer[i - 2] * coef_table[1]));
+    }
+}
+
+
 /* USER CODE END 0 */
 
 /**
@@ -353,9 +468,14 @@ void music_play_filtre_IIR(struct note musique[TAILLE_MUSIQUE])
  */
 int main(void)
 {
-	/* USER CODE BEGIN 1 */
+    int16_t bufferOutput[BUFFER_SIZE_AUDIO]    = { 0 };
+    int16_t buffer_BF_Noise[BUFFER_SIZE_AUDIO] = { 0 };
+    int16_t buffer_HF_Noise[BUFFER_SIZE_AUDIO] = { 0 };
+    int16_t buffer_SIGNAL[BUFFER_SIZE_AUDIO]   = { 0 };
 
-	/* USER CODE END 1 */
+    uint32_t j = 0;
+    uint32_t i = 0;
+
 
 	/* Enable I-Cache---------------------------------------------------------*/
 	SCB_EnableICache();
@@ -368,17 +488,8 @@ int main(void)
 	/* Reset of all peripherals, Initializes the Flash interface and the Systick. */
 	HAL_Init();
 
-	/* USER CODE BEGIN Init */
-
-
-	/* USER CODE END Init */
-
 	/* Configure the system clock */
 	SystemClock_Config();
-
-	/* USER CODE BEGIN SysInit */
-
-	/* USER CODE END SysInit */
 
 	/* Initialize all configured peripherals */
 	MX_GPIO_Init();
@@ -410,14 +521,34 @@ int main(void)
 
 	init_sinus_table();
 
+    note_create_classic(LOW_FREQUENCY_NOISE, MAX_NOTE_TIME_DURATION, buffer_BF_Noise);
+    note_create_DDS(AUDIO_SIGNAL_FREQUENCY,     MAX_NOTE_TIME_DURATION, buffer_SIGNAL);
+    note_create_IIR(HIGHT_FREQUENCY_NOISE,     MAX_NOTE_TIME_DURATION, buffer_HF_Noise);
+
+    // Compute audio signal
+    for (i = 0; i < BUFFER_SIZE_AUDIO; i++)
+    {
+        bufferOutput[i] = buffer_BF_Noise[i] +
+                          buffer_HF_Noise[i] +
+                          buffer_SIGNAL[i];
+    }
+
 	while(1)
 	{
-//		music_play_classic(musique);
+	    for (j = 0; j < SIGNAL_DURATION_IN_MS; j++)
+	    {
+	        /* Envoi des échantillons de sortie */
+	        for (i = 0; i < BUFFER_SIZE_AUDIO; i++)
+	        {
+	            // Update output
+	            echOutputLeft  = bufferOutput[i];
+	            echOutputRight = bufferOutput[i];
 
-//		music_play_DDS(musique);
-
-	    music_play_filtre_IIR(musique);
-
+	            // Apply output
+	            HAL_SAI_Transmit(&hsai_BlockA2,(uint8_t *)&echOutputLeft, 1,SAI_WAIT);
+	            HAL_SAI_Transmit(&hsai_BlockA2,(uint8_t *)&echOutputRight,1,SAI_WAIT);
+	        }
+	    }
 	}
 	/* USER CODE END 3 */
 }
